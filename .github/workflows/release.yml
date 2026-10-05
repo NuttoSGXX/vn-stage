@@ -1,0 +1,27 @@
+name: Release Creation
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # บีบอัดไฟล์ทั้งหมดใน Repository เป็น module.zip
+    - name: Zip Files
+      run: |
+        zip -r ./module.zip . -x ".*" "-*/*"
+
+    # อัปโหลดไฟล์ module.json และ module.zip ไปยัง Release
+    - name: Update Release Assets
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          module.json
+          module.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
