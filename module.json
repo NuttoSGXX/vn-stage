@@ -1,0 +1,9 @@
+{
+  "id": "vn-stage",
+  "title": "VN Stage",
+  "description": "Visual-novel style character portraits as a screen overlay, controlled from a floating GM-only panel.",
+  "version": "0.1.0",
+  "compatibility": { "minimum": "13", "verified": "14" },
+  "esmodules": ["scripts/main.mjs"],
+  "styles": ["styles/vn-stage.css"]
+}
