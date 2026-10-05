@@ -4,6 +4,7 @@ const S = (k) => game.settings.get(MOD, k);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
 const emptySlot = () => ({ char: null, active: true });
+const PV = 160; // Detail preview base height (px) at Size 1
 
 let stage, panel;
 
@@ -11,6 +12,7 @@ let stage, panel;
 function getState() {
   const raw = game.settings.get(MOD, "state") ?? {};
   return {
+    hidden: !!raw.hidden,
     chars: raw.chars ?? [],
     slots: Array.from({ length: SLOTS }, (_, i) => ({ ...emptySlot(), ...(raw.slots?.[i] ?? {}) })),
   };
@@ -67,7 +69,8 @@ class Stage {
   render() {
     this.guides.style.display = game.user.isGM && S("showGuides") ? "" : "none";
     this.vars();
-    const { chars, slots } = getState();
+    const { chars, slots, hidden } = getState();
+    this.el.classList.toggle("hide", hidden);
     const filled = slots.map((s, i) => ({ ...s, i })).filter((s) => chars.some((c) => c.id === s.char));
     const solo = filled.length === 1; // a lone character sits between slot 5 and 6
     const keep = new Set();
@@ -129,6 +132,10 @@ class Panel {
   }
   sync() {
     this.el.classList.toggle("open", this.open);
+    if (this.open) {
+      this.x = clamp(this.x, 0, Math.max(0, innerWidth - Math.min(innerWidth * 0.96, 1180)));
+      this.place();
+    }
     this.el.querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("on", this.open && b.dataset.tab === this.tab));
   }
 
@@ -173,9 +180,10 @@ class Panel {
   }
 
   /* --- tabs --- */
-  t_scene({ chars, slots }) {
+  t_scene({ chars, slots, hidden }) {
     const used = new Set(slots.map((x) => x.char));
-    return `<div class="slots">${slots.map((sl, i) => {
+    return `<div class="bar"><span>Stage · ${slots.filter((x) => x.char).length}/${SLOTS}</span><button data-act="hideall" class="${hidden ? "on" : ""}">${hidden ? "Show all" : "Hide all"}</button></div>
+    <div class="slots">${slots.map((sl, i) => {
       const c = chars.find((c) => c.id === sl.char);
       const opts = chars.filter((o) => o.id === sl.char || !used.has(o.id));
       const dis = c ? "" : "disabled";
@@ -183,7 +191,7 @@ class Panel {
         <div class="n">${i + 1}</div>
         <select data-f="slot"><option value="">—</option>${opts.map((o) => `<option value="${o.id}" ${o.id === sl.char ? "selected" : ""}>${esc(o.name)}</option>`).join("")}</select>
         <div class="thumb">${c ? `<img src="${esc(c.img)}">` : ""}</div>
-        <div class="ctl"><button data-act="left" ${dis}>◀</button><button data-act="active" class="${sl.active ? "on" : ""}" ${dis} title="Active">⏻</button><button data-act="right" ${dis}>▶</button></div>
+        <div class="ctl"><button data-act="left" ${dis}>◀</button><button data-act="active" class="act ${sl.active ? "on" : ""}" ${dis} title="Active on/off"><i class="dot"></i></button><button data-act="right" ${dis}>▶</button></div>
       </div>`;
     }).join("")}</div>`;
   }
@@ -194,9 +202,10 @@ class Panel {
   }
 
   t_detail({ chars }) {
-    const r = (c, f, l, min, max, step) => `<label>${l}<input type="range" data-f="${f}" min="${min}" max="${max}" step="${step}" value="${c[f]}"><output>${c[f]}</output></label>`;
+    const r = (c, f, l, min, max, step) => `<label>${l}<input type="range" data-f="${f}" min="${min}" max="${max}" step="${step}" value="${c[f]}"><input type="number" data-f="${f}" step="${step}" value="${c[f]}"></label>`;
     return `<div class="cards">${chars.map((c) => `<div class="card" data-id="${c.id}">
-      <div class="pv"><img src="${esc(c.img)}" style="height:${Math.round(80 * c.scale)}px"></div><b>${esc(c.name)}</b>
+      <div class="pv"><img src="${esc(c.img)}" style="height:${Math.round(PV * c.scale)}px"></div>
+      <div class="nm"><b>${esc(c.name)}</b><button data-act="reset" title="Reset to default">Reset</button></div>
       ${r(c, "scale", "Size", 0.3, 2.5, 0.01)}${r(c, "y", "Y offset", -300, 300, 1)}${r(c, "x", "X offset", -300, 300, 1)}</div>`).join("") || `<p class="hint">No characters yet.</p>`}</div>`;
   }
 
@@ -210,18 +219,23 @@ class Panel {
   /* --- events --- */
   onInput(e) {
     const t = e.target;
-    if (t.type !== "range") return;
+    if (!["range", "number"].includes(t.type) || t.value === "") return;
     const v = Number(t.value);
-    t.nextElementSibling.textContent = v;
+    t.closest("label")?.querySelectorAll("input[type=range],input[type=number],output").forEach((el) => {
+      if (el === t) return;
+      if (el.tagName === "OUTPUT") el.textContent = v;
+      else el.value = v;
+    });
     const id = t.closest("[data-id]")?.dataset.id;
     if (id) {
       stage.live(id, t.dataset.f, v);
-      if (t.dataset.f === "scale") t.closest(".card").querySelector(".pv img").style.height = `${80 * v}px`;
+      if (t.dataset.f === "scale") t.closest(".card").querySelector(".pv img").style.height = `${PV * v}px`;
     } else if (t.dataset.set) stage.vars({ [t.dataset.set]: v });
   }
 
   onChange(e) {
     const t = e.target, f = t.dataset.f, id = t.closest("[data-id]")?.dataset.id;
+    if (t.type === "number" && t.value === "") return;
     if (t.dataset.set) return game.settings.set(MOD, t.dataset.set, t.type === "checkbox" ? t.checked : Number(t.value));
     if (f === "slot") {
       const i = Number(t.closest("[data-i]").dataset.i);
@@ -245,6 +259,8 @@ class Panel {
       });
     }
     if (a === "del") return commit((s) => { s.chars = s.chars.filter((c) => c.id !== id); s.slots.forEach((x, k) => { if (x.char === id) s.slots[k] = emptySlot(); }); });
+    if (a === "hideall") return commit((s) => { s.hidden = !s.hidden; });
+    if (a === "reset") return commit((s) => { Object.assign(s.chars.find((c) => c.id === id), { scale: 1, x: 0, y: 0 }); });
     if (a === "active") return commit((s) => { s.slots[i].active = !s.slots[i].active; });
     if (a === "left" || a === "right") return commit((s) => { push(s.slots, i, a === "left" ? -1 : 1); });
     if (a === "clear") return commit((s) => { s.slots = s.slots.map(emptySlot); });
