@@ -171,6 +171,24 @@ class Panel {
     this.popEl.className = "gv-pop";
     this.popEl.hidden = true;
     this.el.querySelector(".gv-box").append(this.popEl);
+    this.popPos = null;
+    this.popEl.addEventListener("pointerdown", (e) => {
+      if (!e.target.closest(".pop-h") || e.target.closest("button")) return;
+      const pr = this.popEl.getBoundingClientRect();
+      const dx = e.clientX - pr.left, dy = e.clientY - pr.top;
+      const move = (ev) => {
+        const sc = S("uiScale") / 100;
+        const box = this.el.querySelector(".gv-box").getBoundingClientRect();
+        const l = clamp((ev.clientX - dx - box.left) / sc, 0, box.width / sc - 200);
+        const t = clamp((ev.clientY - dy - box.top) / sc, 0, box.height / sc - 60);
+        this.popPos = { l, t };
+        this.popEl.style.left = `${l}px`;
+        this.popEl.style.top = `${t}px`;
+      };
+      const up = () => { document.removeEventListener("pointermove", move); document.removeEventListener("pointerup", up); };
+      document.addEventListener("pointermove", move);
+      document.addEventListener("pointerup", up);
+    });
     this.applyScale();
     this.place();
     this.sync();
@@ -312,7 +330,7 @@ class Panel {
     const el = this.popEl;
     const c = this.pop ? getState().chars.find((x) => x.id === this.pop) : null;
     const col = c ? this.body.querySelector(`.col[data-id="${c.id}"]`) : null;
-    if (!c || !col) { el.hidden = true; return; }
+    if (!c || !col) { el.hidden = true; this.popPos = null; return; }
     const f = (k, l, min, max, step) => `<div class="fld"><span>${l}</span><input type="number" data-f="${k}" step="${step}" value="${c[k]}"><input type="range" data-f="${k}" min="${min}" max="${max}" step="${step}" value="${c[k]}"></div>`;
     el.dataset.id = c.id;
     el.innerHTML = `<div class="pop-h"><b>${esc(c.name)}</b><button data-act="popclose" title="Close">${ICONS.del}</button></div>
@@ -323,8 +341,16 @@ class Panel {
     const box = this.el.querySelector(".gv-box").getBoundingClientRect();
     const cr = col.getBoundingClientRect();
     const sr = this.body.getBoundingClientRect();
-    el.style.left = `${clamp((cr.left + cr.width / 2 - box.left) / sc - 100, 8, box.width / sc - 208)}px`;
-    el.style.top = `${(sr.top - box.top) / sc + 8}px`;
+    const W = box.width / sc;
+    let l, t;
+    if (this.popPos) ({ l, t } = this.popPos); // keep where the user dragged it
+    else {
+      const right = (cr.right - box.left) / sc + 10; // default: beside the figure, not on top of it
+      l = right + 208 <= W ? right : (cr.left - box.left) / sc - 210;
+      t = (sr.top - box.top) / sc + 8;
+    }
+    el.style.left = `${clamp(l, 0, Math.max(0, W - 200))}px`;
+    el.style.top = `${Math.max(0, t)}px`;
   }
 
   t_settings() {

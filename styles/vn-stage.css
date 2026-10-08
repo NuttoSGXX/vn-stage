@@ -139,7 +139,7 @@
 /* detail: adjust popup */
 .gv-pop { position: absolute; z-index: 5; width: 200px; display: flex; flex-direction: column; gap: 7px; padding: 8px; background: linear-gradient(var(--gv-panel-1), var(--gv-panel-3)); border: 2px solid var(--gv-iron); border-radius: 3px; box-shadow: 0 8px 16px rgba(0, 0, 0, .8), 0 0 0 1px #000; }
 .gv-pop[hidden] { display: none; }
-.pop-h { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.pop-h { display: flex; justify-content: space-between; align-items: center; gap: 6px; cursor: move; user-select: none; }
 .pop-h b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 16px/1.1 var(--gv-display); }
 #vn-panel .pop-h button { flex: none; width: 22px; padding: 0; }
 .fld { display: grid; grid-template-columns: 1fr 58px; gap: 2px 4px; align-items: center; font: 700 10px/1 var(--gv-label); letter-spacing: .06em; color: var(--gv-ash); }
