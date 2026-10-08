@@ -8,8 +8,20 @@ const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const emptySlot = () => ({ char: null, active: true, flip: false });
 
-const ico = (d) => `<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const ico = (d) => `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const GEAR = (() => {
+  const pts = [];
+  for (let i = 0; i < 8; i++) for (const [d, r] of [[-16, 5], [-9, 7], [9, 7], [16, 5]]) {
+    const a = ((i * 45 + d) * Math.PI) / 180;
+    pts.push(`${(8 + r * Math.sin(a)).toFixed(2)} ${(8 - r * Math.cos(a)).toFixed(2)}`);
+  }
+  return `M${pts.join("L")}Z`;
+})();
 const ICONS = {
+  scene: ico('<path d="M1.5 4 5.2 3v10l-3.7-1ZM5.2 3h5.6v10H5.2ZM10.8 3l3.7 1v8l-3.7 1Z"/>'),
+  chars: ico('<circle cx="8" cy="5.2" r="2.6"/><path d="M2.6 14c.5-3.2 2.7-4.8 5.4-4.8s4.9 1.6 5.4 4.8"/>'),
+  detail: ico('<path d="M2 3.5h12M2 8h12M2 12.5h12"/>'),
+  gear: ico(`<path d="${GEAR}"/><circle cx="8" cy="8" r="2"/>`),
   left: ico('<path d="M10 3 5 8l5 5"/>'),
   right: ico('<path d="M6 3l5 5-5 5"/>'),
   shake: ico('<path d="M1.5 8h2l1.6-4.5 2.8 9 2.8-9L12.3 8h2.2"/>'),
@@ -138,7 +150,7 @@ class Stage {
 }
 
 /* ---------- the floating GM panel ---------- */
-const TABS = [["scene", "Scene"], ["chars", "Characters"], ["detail", "Detail"], ["settings", "Setting"]];
+const TABS = [["scene", "Scene", ICONS.scene], ["chars", "Characters", ICONS.chars], ["detail", "Detail", ICONS.detail], ["settings", "Setting", ICONS.gear]];
 const OPEN_W = 700;
 
 class Panel {
@@ -150,10 +162,15 @@ class Panel {
     this.el.innerHTML = `<div class="gv-box">
       <header><i class="gv-gem"></i><b>GRIM VN STAGE</b><button data-act="fold" title="Fold / unfold">▾</button></header>
       <div class="gv-rule"></div>
-      <nav>${TABS.map(([k, l]) => `<button data-tab="${k}">${l}</button>`).join("")}</nav>
+      <nav>${TABS.map(([k, l, i]) => `<button data-tab="${k}" title="${l}">${i}<span>${l}</span></button>`).join("")}</nav>
       <section></section></div>`;
     document.body.append(this.el);
     this.body = this.el.querySelector("section");
+    this.pop = null;
+    this.popEl = document.createElement("div");
+    this.popEl.className = "gv-pop";
+    this.popEl.hidden = true;
+    this.el.querySelector(".gv-box").append(this.popEl);
     this.applyScale();
     this.place();
     this.sync();
@@ -193,6 +210,7 @@ class Panel {
         this.save();
       } else this.act(t);
     });
+    this.el.addEventListener("keydown", (e) => { if (e.key === "Escape" && this.pop) { this.pop = null; this.renderBody(); this.renderPop(); } });
     this.el.addEventListener("change", (e) => this.onChange(e));
     this.el.addEventListener("input", (e) => this.onInput(e));
 
@@ -220,17 +238,19 @@ class Panel {
   /** Called when the world state changes. Our own slider/number edits skip the redraw so nothing jumps. */
   refresh() {
     if (!this.skip) this.renderBody();
+    if (this.pop && !getState().chars.some((c) => c.id === this.pop)) { this.pop = null; this.renderPop(); }
   }
 
   renderBody() {
+    if (this.pop && !(this.open && this.tab === "detail")) { this.pop = null; this.popEl.hidden = true; }
     const same = this.open && this.shown === this.tab;
     const top = same ? this.body.scrollTop : 0;
-    const side = same ? this.body.querySelector(".slots,.cards")?.scrollLeft ?? 0 : 0;
+    const side = same ? this.body.querySelector(".slots,.lineup")?.scrollLeft ?? 0 : 0;
     this.body.innerHTML = this.open ? this[`t_${this.tab}`](getState()) : "";
     this.shown = this.open ? this.tab : null;
     if (same) {
       this.body.scrollTop = top;
-      const sc = this.body.querySelector(".slots,.cards");
+      const sc = this.body.querySelector(".slots,.lineup");
       if (sc) sc.scrollLeft = side;
     }
   }
@@ -264,11 +284,47 @@ class Panel {
   }
 
   t_detail({ chars }) {
-    const f = (c, k, l, min, max, step) => `<div class="fld"><span>${l}</span><input type="number" data-f="${k}" step="${step}" value="${c[k]}"><input type="range" data-f="${k}" min="${min}" max="${max}" step="${step}" value="${c[k]}"></div>`;
-    return `<div class="cards">${chars.map((c) => `<div class="card" data-id="${c.id}">
-      <div class="pv"><img src="${esc(c.img)}"></div>
-      <div class="nm"><b title="${esc(c.name)}">${esc(c.name)}</b><button data-act="reset" title="Reset to default">Reset</button></div>
-      ${f(c, "scale", "Size", 0.3, 2.5, 0.01)}${f(c, "y", "Y offset", -300, 300, 1)}${f(c, "x", "X offset", -300, 300, 1)}</div>`).join("") || `<p class="hint">No characters yet.</p>`}</div>`;
+    if (!chars.length) return `<p class="hint">No characters yet.</p>`;
+    const H = 230;
+    const T = Math.max(1.5, Math.ceil(Math.max(...chars.map((c) => c.scale)) * 4) / 4); // ruler top, in Size units
+    const topFt = 6 * T; // convention: Size 1 = 6'0"
+    const ppf = H / topFt;
+    const ftIn = (v) => { const n = Math.round(v * 72); return `${Math.floor(n / 12)}'${n % 12}"`; };
+    let lines = "";
+    for (let h = 0; h <= topFt + 1e-9; h += 0.5) {
+      const major = Number.isInteger(h);
+      const lab = major && h ? `<span class="l">${h}'0"</span><span class="r">${h}'0"</span>` : "";
+      lines += `<div class="ln ${major ? "maj" : ""}" style="bottom:${((h / topFt) * 100).toFixed(2)}%">${lab}</div>`;
+    }
+    return `<div class="lineup" data-ppf="${ppf}" style="--lh:${H}px"><div class="lu-in"><div class="rule">${lines}</div>
+      <div class="figs">${chars.map((c) => `<div class="col ${c.id === this.pop ? "sel" : ""}" data-id="${c.id}" data-act="pick" title="Click to adjust">
+        <div class="fg"><img src="${esc(c.img)}" style="height:${(c.scale * 6 * ppf).toFixed(1)}px" draggable="false"></div>
+        <div class="nmx"><b>${esc(c.name)}</b><small>${ftIn(c.scale)}</small></div></div>`).join("")}</div></div></div>`;
+  }
+
+  openPop(id) {
+    this.pop = this.pop === id ? null : id;
+    this.renderBody();
+    this.renderPop();
+  }
+
+  renderPop() {
+    const el = this.popEl;
+    const c = this.pop ? getState().chars.find((x) => x.id === this.pop) : null;
+    const col = c ? this.body.querySelector(`.col[data-id="${c.id}"]`) : null;
+    if (!c || !col) { el.hidden = true; return; }
+    const f = (k, l, min, max, step) => `<div class="fld"><span>${l}</span><input type="number" data-f="${k}" step="${step}" value="${c[k]}"><input type="range" data-f="${k}" min="${min}" max="${max}" step="${step}" value="${c[k]}"></div>`;
+    el.dataset.id = c.id;
+    el.innerHTML = `<div class="pop-h"><b>${esc(c.name)}</b><button data-act="popclose" title="Close">${ICONS.del}</button></div>
+      ${f("scale", "Size", 0.3, 2.5, 0.01)}${f("y", "Y offset", -300, 300, 1)}${f("x", "X offset", -300, 300, 1)}
+      <button data-act="reset" title="Reset to default">Reset</button>`;
+    el.hidden = false;
+    const sc = S("uiScale") / 100;
+    const box = this.el.querySelector(".gv-box").getBoundingClientRect();
+    const cr = col.getBoundingClientRect();
+    const sr = this.body.getBoundingClientRect();
+    el.style.left = `${clamp((cr.left + cr.width / 2 - box.left) / sc - 100, 8, box.width / sc - 208)}px`;
+    el.style.top = `${(sr.top - box.top) / sc + 8}px`;
   }
 
   t_settings() {
@@ -289,7 +345,14 @@ class Panel {
       else el.value = v;
     });
     const id = t.closest("[data-id]")?.dataset.id;
-    if (id) stage.live(id, t.dataset.f, v);
+    if (id) {
+      stage.live(id, t.dataset.f, v);
+      if (t.dataset.f === "scale") {
+        const ln = this.body.querySelector(".lineup");
+        const img = ln?.querySelector(`.col[data-id="${id}"] img`);
+        if (img) img.style.height = `${(v * 6 * Number(ln.dataset.ppf)).toFixed(1)}px`;
+      }
+    }
     else if (t.dataset.set === "uiScale") this.applyScale(v);
     else if (t.dataset.set) stage.vars({ [t.dataset.set]: v });
   }
@@ -303,7 +366,7 @@ class Panel {
       return commit((s) => { s.slots[i] = { char: t.value || null, active: true, flip: false }; });
     }
     if (f === "name" || ["scale", "x", "y"].includes(f)) {
-      this.skip = true; // the field already shows the new value; don't redraw (keeps scroll + focus)
+      if (f === "name") this.skip = true; // keep focus in the name field
       const patch = f === "name" ? { name: t.value.trim() || "?" } : { [f]: Number(t.value) };
       return commit((s) => Object.assign(s.chars.find((c) => c.id === id), patch)).finally(() => { this.skip = false; });
     }
@@ -342,7 +405,9 @@ class Panel {
     }
     if (a === "del") return commit((s) => { s.chars = s.chars.filter((c) => c.id !== id); s.slots.forEach((x, k) => { if (x.char === id) s.slots[k] = emptySlot(); }); });
     if (a === "hideall") return commit((s) => { s.hidden = !s.hidden; });
-    if (a === "reset") return commit((s) => { Object.assign(s.chars.find((c) => c.id === id), { scale: 1, x: 0, y: 0 }); });
+    if (a === "pick") return this.openPop(id);
+    if (a === "popclose") { this.pop = null; this.renderBody(); return this.renderPop(); }
+    if (a === "reset") return commit((s) => { Object.assign(s.chars.find((c) => c.id === id), { scale: 1, x: 0, y: 0 }); }).then(() => this.renderPop());
     if (a === "active") return commit((s) => { s.slots[i].active = !s.slots[i].active; });
     if (a === "left" || a === "right") return commit((s) => { push(s.slots, i, a === "left" ? -1 : 1); });
     if (a === "flip") return commit((s) => { s.slots[i].flip = !s.slots[i].flip; });
