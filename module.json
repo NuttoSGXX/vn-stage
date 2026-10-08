@@ -1,9 +1,14 @@
 {
   "id": "vn-stage",
-  "title": "VN Stage",
-  "description": "Visual-novel style character portraits as a screen overlay, controlled from a floating GM-only panel.",
-  "version": "0.1.0",
+  "title": "Grim VN Stage",
+  "description": "Visual-novel style character portraits as a screen overlay, controlled from a floating GM-only panel. Dark-fantasy styling that matches Grim Almanac.",
+  "version": "0.2.0",
+  "authors": [{ "name": "NuttoSGXX" }],
   "compatibility": { "minimum": "13", "verified": "14" },
   "esmodules": ["scripts/main.mjs"],
-  "styles": ["styles/vn-stage.css"]
+  "styles": ["styles/vn-stage.css"],
+  "socket": true,
+  "url": "https://github.com/NuttoSGXX/vn-stage",
+  "manifest": "https://github.com/NuttoSGXX/vn-stage/releases/latest/download/module.json",
+  "download": "https://github.com/NuttoSGXX/vn-stage/releases/download/v0.2.0/module.zip"
 }

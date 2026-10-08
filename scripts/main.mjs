@@ -1,10 +1,22 @@
 const MOD = "vn-stage";
+const SOCK = `module.${MOD}`;
 const SLOTS = 10;
+const EXIT_MS = 750;
 const S = (k) => game.settings.get(MOD, k);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
-const emptySlot = () => ({ char: null, active: true });
-const PV = 160; // Detail preview base height (px) at Size 1
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const emptySlot = () => ({ char: null, active: true, flip: false });
+
+const ico = (d) => `<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const ICONS = {
+  left: ico('<path d="M10 3 5 8l5 5"/>'),
+  right: ico('<path d="M6 3l5 5-5 5"/>'),
+  shake: ico('<path d="M1.5 8h2l1.6-4.5 2.8 9 2.8-9L12.3 8h2.2"/>'),
+  exit: ico('<path d="M2 8h8M7 4.5 10.5 8 7 11.5M14 3v10"/>'),
+  flip: ico('<path d="M2 8h12M5 5 2 8l3 3M11 5l3 3-3 3"/>'),
+  del: ico('<path d="M4 4l8 8M12 4l-8 8"/>'),
+};
 
 let stage, panel;
 
@@ -66,6 +78,25 @@ class Stage {
     if (n) n.style.setProperty({ scale: "--s", x: "--ox", y: "--oy" }[key], val);
   }
 
+  /** One-shot effects, broadcast to every client over the module socket. */
+  fx({ t, id, dir }) {
+    const n = this.nodes.get(id);
+    if (!n) return;
+    const img = n.querySelector("img");
+    if (t === "shake") {
+      img.classList.remove("shake");
+      void img.offsetWidth;
+      img.classList.add("shake");
+      img.addEventListener("animationend", () => img.classList.remove("shake"), { once: true });
+    } else if (t === "exit") {
+      const w = n.getBoundingClientRect().width;
+      const off = ((w / 2 + 60) / innerWidth) * 100;
+      n.classList.add("running");
+      img.classList.add("run");
+      n.style.setProperty("--x", dir < 0 ? -off : 100 + off);
+    }
+  }
+
   render() {
     this.guides.style.display = game.user.isGM && S("showGuides") ? "" : "none";
     this.vars();
@@ -82,15 +113,17 @@ class Stage {
       if (!n) {
         n = document.createElement("div");
         n.className = "vn-portrait";
-        n.innerHTML = `<img draggable="false">`;
+        n.innerHTML = `<div class="fl"><img draggable="false"></div>`;
         this.el.append(n);
         this.nodes.set(c.id, n);
         requestAnimationFrame(() => requestAnimationFrame(() => n.classList.add("show")));
       }
-      const img = n.firstChild;
+      if (n.classList.contains("running")) continue; // mid-exit: leave it alone
+      const img = n.querySelector("img");
       if (img.getAttribute("src") !== c.img) img.src = c.img;
       n.classList.toggle("off", !s.active);
       n.style.setProperty("--x", solo ? 50 : (s.i + 0.5) * 10);
+      n.style.setProperty("--flip", s.flip ? -1 : 1);
       n.style.setProperty("--s", c.scale);
       n.style.setProperty("--ox", c.x);
       n.style.setProperty("--oy", c.y);
@@ -106,23 +139,31 @@ class Stage {
 
 /* ---------- the floating GM panel ---------- */
 const TABS = [["scene", "Scene"], ["chars", "Characters"], ["detail", "Detail"], ["settings", "Setting"]];
+const OPEN_W = 700;
 
 class Panel {
   constructor() {
     const p = S("panel");
-    Object.assign(this, { x: p.x, y: p.y, tab: p.tab, open: p.open });
+    Object.assign(this, { x: p.x, y: p.y, tab: p.tab, open: p.open, skip: false, busy: false, shown: null });
     this.el = document.createElement("div");
     this.el.id = "vn-panel";
-    this.el.innerHTML = `<header><i>⠿</i><b>VN STAGE</b><button data-act="fold" title="Fold / unfold">▾</button></header>
-      <nav>${TABS.map(([k, l]) => `<button data-tab="${k}">${l}</button>`).join("")}</nav><section></section>`;
+    this.el.innerHTML = `<div class="gv-box">
+      <header><i class="gv-gem"></i><b>GRIM VN STAGE</b><button data-act="fold" title="Fold / unfold">▾</button></header>
+      <div class="gv-rule"></div>
+      <nav>${TABS.map(([k, l]) => `<button data-tab="${k}">${l}</button>`).join("")}</nav>
+      <section></section></div>`;
     document.body.append(this.el);
     this.body = this.el.querySelector("section");
+    this.applyScale();
     this.place();
     this.sync();
     this.renderBody();
     this.bind();
   }
 
+  applyScale(v = S("uiScale")) {
+    this.el.style.setProperty("--gv-sc", v / 100);
+  }
   place() {
     this.el.style.left = `${this.x}px`;
     this.el.style.top = `${this.y}px`;
@@ -133,7 +174,8 @@ class Panel {
   sync() {
     this.el.classList.toggle("open", this.open);
     if (this.open) {
-      this.x = clamp(this.x, 0, Math.max(0, innerWidth - Math.min(innerWidth * 0.96, 1180)));
+      const w = Math.min(innerWidth * 0.94, OPEN_W * (S("uiScale") / 100));
+      this.x = clamp(this.x, 0, Math.max(0, innerWidth - w));
       this.place();
     }
     this.el.querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("on", this.open && b.dataset.tab === this.tab));
@@ -175,45 +217,65 @@ class Panel {
     });
   }
 
+  /** Called when the world state changes. Our own slider/number edits skip the redraw so nothing jumps. */
+  refresh() {
+    if (!this.skip) this.renderBody();
+  }
+
   renderBody() {
+    const same = this.open && this.shown === this.tab;
+    const top = same ? this.body.scrollTop : 0;
+    const side = same ? this.body.querySelector(".slots,.cards")?.scrollLeft ?? 0 : 0;
     this.body.innerHTML = this.open ? this[`t_${this.tab}`](getState()) : "";
+    this.shown = this.open ? this.tab : null;
+    if (same) {
+      this.body.scrollTop = top;
+      const sc = this.body.querySelector(".slots,.cards");
+      if (sc) sc.scrollLeft = side;
+    }
   }
 
   /* --- tabs --- */
   t_scene({ chars, slots, hidden }) {
     const used = new Set(slots.map((x) => x.char));
-    return `<div class="bar"><span>Stage · ${slots.filter((x) => x.char).length}/${SLOTS}</span><button data-act="hideall" class="${hidden ? "on" : ""}">${hidden ? "Show all" : "Hide all"}</button></div>
+    const on = slots.filter((x) => x.char).length;
+    return `<div class="bar"><span>Stage · ${on}/${SLOTS}</span><button data-act="hideall" class="${hidden ? "on" : ""}">${hidden ? "Show all" : "Hide all"}</button></div>
     <div class="slots">${slots.map((sl, i) => {
       const c = chars.find((c) => c.id === sl.char);
       const opts = chars.filter((o) => o.id === sl.char || !used.has(o.id));
       const dis = c ? "" : "disabled";
       return `<div class="slot ${c && !sl.active ? "off" : ""}" data-i="${i}">
-        <div class="n">${i + 1}</div>
-        <select data-f="slot"><option value="">—</option>${opts.map((o) => `<option value="${o.id}" ${o.id === sl.char ? "selected" : ""}>${esc(o.name)}</option>`).join("")}</select>
-        <div class="thumb">${c ? `<img src="${esc(c.img)}">` : ""}</div>
-        <div class="ctl"><button data-act="left" ${dis}>◀</button><button data-act="active" class="act ${sl.active ? "on" : ""}" ${dis} title="Active on/off"><i class="dot"></i></button><button data-act="right" ${dis}>▶</button></div>
-      </div>`;
+        <select data-f="slot" title="Character"><option value="">—</option>${opts.map((o) => `<option value="${o.id}" ${o.id === sl.char ? "selected" : ""}>${esc(o.name)}</option>`).join("")}</select>
+        <div class="thumb"><em>${i + 1}</em>${c ? `<img class="${sl.flip ? "flip" : ""}" src="${esc(c.img)}">` : ""}</div>
+        <div class="ctl">
+          <button data-act="left" ${dis} title="Move left">${ICONS.left}</button>
+          <button data-act="active" class="act ${sl.active ? "on" : ""}" ${dis} title="Active on / off"><i class="dot"></i></button>
+          <button data-act="right" ${dis} title="Move right">${ICONS.right}</button>
+          <button data-act="shake" ${dis} title="Shake">${ICONS.shake}</button>
+          <button data-act="exit" ${dis} title="Run off screen">${ICONS.exit}</button>
+          <button data-act="flip" ${dis} title="Flip">${ICONS.flip}</button>
+        </div></div>`;
     }).join("")}</div>`;
   }
 
   t_chars({ chars }) {
-    return `<div class="bar"><span>Character list (${chars.length})</span><button data-act="add" class="plus">+</button></div>
-      <div class="list">${chars.map((c) => `<div class="row" data-id="${c.id}"><img src="${esc(c.img)}" data-act="reimg" title="Change image"><input data-f="name" value="${esc(c.name)}"><button data-act="del" title="Delete">✕</button></div>`).join("") || `<p class="hint">Press + to add a character image.</p>`}</div>`;
+    return `<div class="bar"><span>Characters · ${chars.length}</span><button data-act="add" class="plus" title="Add character">+</button></div>
+      <div class="list">${chars.map((c) => `<div class="row" data-id="${c.id}"><img src="${esc(c.img)}" data-act="reimg" title="Change image"><input type="text" data-f="name" value="${esc(c.name)}"><button data-act="del" title="Delete">${ICONS.del}</button></div>`).join("") || `<p class="hint">Press + to add a character image.</p>`}</div>`;
   }
 
   t_detail({ chars }) {
-    const r = (c, f, l, min, max, step) => `<label>${l}<input type="range" data-f="${f}" min="${min}" max="${max}" step="${step}" value="${c[f]}"><input type="number" data-f="${f}" step="${step}" value="${c[f]}"></label>`;
+    const f = (c, k, l, min, max, step) => `<div class="fld"><span>${l}</span><input type="number" data-f="${k}" step="${step}" value="${c[k]}"><input type="range" data-f="${k}" min="${min}" max="${max}" step="${step}" value="${c[k]}"></div>`;
     return `<div class="cards">${chars.map((c) => `<div class="card" data-id="${c.id}">
-      <div class="pv"><img src="${esc(c.img)}" style="height:${Math.round(PV * c.scale)}px"></div>
-      <div class="nm"><b>${esc(c.name)}</b><button data-act="reset" title="Reset to default">Reset</button></div>
-      ${r(c, "scale", "Size", 0.3, 2.5, 0.01)}${r(c, "y", "Y offset", -300, 300, 1)}${r(c, "x", "X offset", -300, 300, 1)}</div>`).join("") || `<p class="hint">No characters yet.</p>`}</div>`;
+      <div class="pv"><img src="${esc(c.img)}"></div>
+      <div class="nm"><b title="${esc(c.name)}">${esc(c.name)}</b><button data-act="reset" title="Reset to default">Reset</button></div>
+      ${f(c, "scale", "Size", 0.3, 2.5, 0.01)}${f(c, "y", "Y offset", -300, 300, 1)}${f(c, "x", "X offset", -300, 300, 1)}</div>`).join("") || `<p class="hint">No characters yet.</p>`}</div>`;
   }
 
   t_settings() {
     const r = (k, l, min, max, step, u) => `<label>${l}<input type="range" data-set="${k}" min="${min}" max="${max}" step="${step}" value="${S(k)}"><output>${S(k)}</output><em>${u}</em></label>`;
     const cb = (k, l) => `<label class="cb"><input type="checkbox" data-set="${k}" ${S(k) ? "checked" : ""}> ${l}</label>`;
-    return `<div class="set">${r("baseHeight", "Portrait height", 30, 120, 1, "vh")}${r("bottom", "Bottom offset", -200, 200, 1, "px")}${r("speed", "Move speed", 0, 1500, 10, "ms")}${r("dim", "Inactive brightness", 0, 100, 5, "%")}
-      ${cb("showGuides", "Show slot markers (GM only)")}<button data-act="clear">Clear stage</button></div>`;
+    return `<div class="set">${r("uiScale", "Panel size", 60, 140, 5, "%")}${r("baseHeight", "Portrait height", 30, 120, 1, "vh")}${r("bottom", "Bottom offset", -200, 200, 1, "px")}${r("speed", "Move speed", 0, 1500, 10, "ms")}${r("dim", "Inactive brightness", 0, 100, 5, "%")}
+      ${cb("showGuides", "Show slot markers (GM only)")}<div><button data-act="clear">Clear stage</button></div></div>`;
   }
 
   /* --- events --- */
@@ -221,16 +283,15 @@ class Panel {
     const t = e.target;
     if (!["range", "number"].includes(t.type) || t.value === "") return;
     const v = Number(t.value);
-    t.closest("label")?.querySelectorAll("input[type=range],input[type=number],output").forEach((el) => {
+    t.closest(".fld, label")?.querySelectorAll("input[type=range],input[type=number],output").forEach((el) => {
       if (el === t) return;
       if (el.tagName === "OUTPUT") el.textContent = v;
       else el.value = v;
     });
     const id = t.closest("[data-id]")?.dataset.id;
-    if (id) {
-      stage.live(id, t.dataset.f, v);
-      if (t.dataset.f === "scale") t.closest(".card").querySelector(".pv img").style.height = `${PV * v}px`;
-    } else if (t.dataset.set) stage.vars({ [t.dataset.set]: v });
+    if (id) stage.live(id, t.dataset.f, v);
+    else if (t.dataset.set === "uiScale") this.applyScale(v);
+    else if (t.dataset.set) stage.vars({ [t.dataset.set]: v });
   }
 
   onChange(e) {
@@ -239,10 +300,31 @@ class Panel {
     if (t.dataset.set) return game.settings.set(MOD, t.dataset.set, t.type === "checkbox" ? t.checked : Number(t.value));
     if (f === "slot") {
       const i = Number(t.closest("[data-i]").dataset.i);
-      return commit((s) => { s.slots[i] = { char: t.value || null, active: true }; });
+      return commit((s) => { s.slots[i] = { char: t.value || null, active: true, flip: false }; });
     }
-    if (f === "name") return commit((s) => { s.chars.find((c) => c.id === id).name = t.value.trim() || "?"; });
-    if (["scale", "x", "y"].includes(f)) return commit((s) => { s.chars.find((c) => c.id === id)[f] = Number(t.value); });
+    if (f === "name" || ["scale", "x", "y"].includes(f)) {
+      this.skip = true; // the field already shows the new value; don't redraw (keeps scroll + focus)
+      const patch = f === "name" ? { name: t.value.trim() || "?" } : { [f]: Number(t.value) };
+      return commit((s) => Object.assign(s.chars.find((c) => c.id === id), patch)).finally(() => { this.skip = false; });
+    }
+  }
+
+  send(d) {
+    game.socket.emit(SOCK, d);
+    stage.fx(d);
+  }
+
+  async exit(i) {
+    if (this.busy) return;
+    const { slots } = getState();
+    const id = slots[i].char;
+    if (!id) return;
+    this.busy = true;
+    const solo = slots.filter((x) => x.char).length === 1;
+    this.send({ t: "exit", id, dir: !solo && i < SLOTS / 2 ? -1 : 1 });
+    await sleep(EXIT_MS + 100);
+    await commit((s) => { const k = s.slots.findIndex((x) => x.char === id); if (k >= 0) s.slots[k] = emptySlot(); });
+    this.busy = false;
   }
 
   async act(t) {
@@ -263,13 +345,16 @@ class Panel {
     if (a === "reset") return commit((s) => { Object.assign(s.chars.find((c) => c.id === id), { scale: 1, x: 0, y: 0 }); });
     if (a === "active") return commit((s) => { s.slots[i].active = !s.slots[i].active; });
     if (a === "left" || a === "right") return commit((s) => { push(s.slots, i, a === "left" ? -1 : 1); });
+    if (a === "flip") return commit((s) => { s.slots[i].flip = !s.slots[i].flip; });
+    if (a === "shake") return this.send({ t: "shake", id: getState().slots[i].char });
+    if (a === "exit") return this.exit(i);
     if (a === "clear") return commit((s) => { s.slots = s.slots.map(emptySlot); });
   }
 }
 
 /* ---------- hooks ---------- */
 Hooks.once("init", () => {
-  const refresh = () => { stage?.render(); panel?.renderBody(); };
+  const refresh = () => { stage?.render(); panel?.refresh(); };
   const world = (key, type, def) => game.settings.register(MOD, key, { scope: "world", config: false, type, default: def, onChange: refresh });
   world("state", Object, { chars: [], slots: [] });
   world("baseHeight", Number, 75);
@@ -277,11 +362,13 @@ Hooks.once("init", () => {
   world("speed", Number, 450);
   world("dim", Number, 50);
   game.settings.register(MOD, "showGuides", { scope: "client", config: false, type: Boolean, default: true, onChange: refresh });
+  game.settings.register(MOD, "uiScale", { scope: "client", config: false, type: Number, default: 100, onChange: () => panel?.applyScale() });
   game.settings.register(MOD, "panel", { scope: "client", config: false, type: Object, default: { x: 90, y: 90, tab: "scene", open: true } });
 });
 
 Hooks.once("ready", () => {
   stage = new Stage();
   stage.render();
+  game.socket.on(SOCK, (d) => stage?.fx(d));
   if (game.user.isGM) panel = new Panel();
 });

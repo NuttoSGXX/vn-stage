@@ -1,0 +1,2 @@
+Grenze (display) and Cinzel (labels) are licensed under the SIL Open Font License 1.1
+https://openfontlicense.org  — the same font files used by Grim Almanac.
